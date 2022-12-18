@@ -1,0 +1,2 @@
+#!/bin/bash
+gcc -D_POSIX_C_SOURCE=200809 -std=c11 -Wall -Wextra --pedantic -g3 -I./ -o lsh main.c jobs.c shell.c parser.c common.c builtin.c
