@@ -34,6 +34,7 @@ typedef struct Process {
     char** args;
     pid_t pid;
     Process_Status status;
+    Descriptors fd;
 } Process;
 
 Process* lsh_find_process_with_pid(pid_t pid);
@@ -54,6 +55,7 @@ bool lsh_is_job_stopped(Job* job);
 bool lsh_is_job_completed(Job* job);
 bool lsh_is_job_terminated(Job* job);
 
+void lsh_print_job_status(Job* job, int fd_out);
 // lsh_update_job_statuses
 //
 void lsh_update_job_statuses(void);

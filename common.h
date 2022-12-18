@@ -6,6 +6,12 @@
 
 #define UNUSED(x) ((void)x)
 
+typedef struct Descriptors {
+    int in;
+    int out;
+    int err;
+} Descriptors;
+
 char* lsh_allocate_from_slice(char const* begin, char const* end);
 void* lsh_alloc_and_zero(unsigned int size);
 

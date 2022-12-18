@@ -1,3 +1,4 @@
+#include "common.h"
 #include <parser.h>
 
 #include <stddef.h>
@@ -21,7 +22,7 @@ static void free_process_args(Process_Args* args) {
 void lsh_free_command(Command command) {
     for(Process_Args* current = command.args; current != NULL;) {
         Process_Args* next = current->next;
-        free(current);
+        free_process_args(current);
         current = next;
     }
 }
@@ -148,7 +149,7 @@ static bool lsh_parse_redirect(char const** string, Process_Args* const args) {
     while(true) {
         Token const token = lsh_tokenise(*string);
         if(token.kind == TOKEN_REDIRECT_IN) {
-            Token const loc = lsh_tokenise(*string);
+            Token const loc = lsh_tokenise(token.end);
             if(loc.kind != TOKEN_STRING) {
                 *string = backup;
                 return false;
@@ -159,7 +160,7 @@ static bool lsh_parse_redirect(char const** string, Process_Args* const args) {
             }
             args->redirect_in = lsh_normalise_token_string(loc);
         } else if(token.kind == TOKEN_REDIRECT_OUT) {
-            Token const loc = lsh_tokenise(*string);
+            Token const loc = lsh_tokenise(token.end);
             if(loc.kind != TOKEN_STRING) {
                 *string = backup;
                 return false;
@@ -170,7 +171,7 @@ static bool lsh_parse_redirect(char const** string, Process_Args* const args) {
             }
             args->redirect_out = lsh_normalise_token_string(loc);
         } else if(token.kind == TOKEN_REDIRECT_ERR) {
-            Token const loc = lsh_tokenise(*string);
+            Token const loc = lsh_tokenise(token.end);
             if(loc.kind != TOKEN_STRING) {
                 *string = backup;
                 return false;
@@ -258,6 +259,9 @@ Parse_Result lsh_parse(char const* command_string) {
     if(lsh_parse_command(&command_string, &command)) {
         return (Parse_Result){.kind = PARSE_VALUE, .value = command};
     } else {
-        return (Parse_Result){.kind = PARSE_ERROR, .error = NULL};
+        char const msg[] = "syntax error";
+        return (Parse_Result){
+            .kind = PARSE_ERROR,
+            .error = lsh_allocate_from_slice(msg, msg + sizeof(msg))};
     }
 }

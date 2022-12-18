@@ -3,7 +3,7 @@
 #include <common.h>
 #include <shell.h>
 
-typedef int (*builtin_fn_t)(Shell*, char**);
+typedef int (*builtin_fn_t)(Shell*, char**, Descriptors);
 
 typedef struct Builtin_Fn {
     char const* name;

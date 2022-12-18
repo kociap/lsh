@@ -2,6 +2,7 @@
 
 #include <builtin.h>
 
+#include <errno.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -138,9 +139,7 @@ Job* lsh_create_job(void) {
 bool lsh_is_job_stopped(Job* job) {
     for(Process* process = job->first_process; process != NULL;
         process = process->next) {
-        if(process->status != PROCESS_STOPPED &&
-           (process->status != PROCESS_COMPLETED ||
-            process->status != PROCESS_TERMINATED)) {
+        if(process->status == PROCESS_RUNNING) {
             return false;
         }
     }
@@ -150,7 +149,7 @@ bool lsh_is_job_stopped(Job* job) {
 bool lsh_is_job_completed(Job* job) {
     for(Process* process = job->first_process; process != NULL;
         process = process->next) {
-        if(process->status != PROCESS_COMPLETED ||
+        if(process->status != PROCESS_COMPLETED &&
            process->status != PROCESS_TERMINATED) {
             return false;
         }
@@ -193,11 +192,27 @@ static void lsh_update_process_status(pid_t const pid, int const code) {
     }
 }
 
+void lsh_print_job_status(Job* const job, int const fd_out) {
+    bool const stopped = lsh_is_job_stopped(job);
+    bool const completed = lsh_is_job_completed(job);
+    bool const terminated = lsh_is_job_terminated(job);
+    if(terminated) {
+        dprintf(fd_out, "[%d] Terminated %s\n", job->id, job->command);
+    } else if(completed) {
+        dprintf(fd_out, "[%d] Completed %s\n", job->id, job->command);
+    } else if(stopped) {
+        dprintf(fd_out, "[%d] Stopped %s\n", job->id, job->command);
+    } else {
+        dprintf(fd_out, "[%d] Running %s\n", job->id, job->command);
+    }
+}
+
 void lsh_update_job_statuses(void) {
     // We poll the statuses of all our child processes.
+    int status = 0;
     while(true) {
         siginfo_t info = {0};
-        int const status =
+        status =
             waitid(P_ALL, 0, &info, WNOHANG | WEXITED | WSTOPPED | WCONTINUED);
         if(info.si_pid == 0 || status != 0) {
             break;
@@ -205,19 +220,37 @@ void lsh_update_job_statuses(void) {
 
         lsh_update_process_status(info.si_pid, info.si_code);
     }
+
+    if(status != 0 && errno == ECHILD) {
+        // There are no child processes, therefore all jobs have been terminated
+        // and we may mark them as such.
+        for(Job_List_Entry *b = lsh_job_list_begin(&job_list),
+                           *e = lsh_job_list_end(&job_list);
+            b != e; b = lsh_job_list_next(b)) {
+            Job* job = lsh_job_list_value(b);
+            for(Process* process = job->first_process; process != NULL;
+                process = process->next) {
+                if(process->status != PROCESS_TERMINATED) {
+                    process->status = PROCESS_COMPLETED;
+                }
+            }
+        }
+    }
 }
 
 void lsh_cleanup_jobs(void) {
     Job_List_Entry* const end = lsh_job_list_end(&job_list);
-    for(Job_List_Entry* b = lsh_job_list_begin(&job_list); b != end;
-        b = lsh_job_list_next(b)) {
+    for(Job_List_Entry* b = lsh_job_list_begin(&job_list); b != end;) {
+        Job_List_Entry* const next = lsh_job_list_next(b);
         Job* job = lsh_job_list_value(b);
         if(lsh_is_job_completed(job)) {
             if(job == current_job) {
                 current_job = NULL;
             }
+            lsh_print_job_status(job, STDOUT_FILENO);
             lsh_job_list_erase(b);
         }
+        b = next;
     }
 
     if(current_job == NULL && end->prev != end) {
@@ -236,7 +269,9 @@ void lsh_cleanup_jobs(void) {
 // Returns:
 // The PID of the child process or -1 if an error occured.
 //
-static pid_t lsh_run_process(char* const* args, pid_t const pgid) {
+static pid_t lsh_run_process(Shell* const shell, char* const* args,
+                             pid_t const pgid, Descriptors const fd,
+                             bool const foreground) {
     pid_t const pid = fork();
     if(pid != 0) { // Parent
         if(pgid == 0) {
@@ -246,6 +281,14 @@ static pid_t lsh_run_process(char* const* args, pid_t const pgid) {
         }
         return pid;
     } else { // Child
+        pid_t const child_pid = getpid();
+        pid_t const child_pgid = (pgid == 0 ? child_pid : pgid);
+        setpgid(child_pid, child_pgid);
+
+        if(foreground) {
+            tcsetpgrp(shell->terminal, child_pgid);
+        }
+
         // Shell set its signals to SIG_IGN. We inherited those, therefore we
         // have to reset them to SIG_DFL.
         signal(SIGINT, SIG_DFL);
@@ -255,15 +298,101 @@ static pid_t lsh_run_process(char* const* args, pid_t const pgid) {
         signal(SIGTTOU, SIG_DFL);
         signal(SIGCHLD, SIG_DFL);
 
-        pid_t const child_pid = getpid();
-        if(pgid == 0) {
-            setpgid(child_pid, child_pid);
-        } else {
-            setpgid(child_pid, pgid);
+        if(fd.in != STDIN_FILENO) {
+            dup2(fd.in, STDIN_FILENO);
+            close(fd.in);
         }
+
+        if(fd.out != STDOUT_FILENO) {
+            dup2(fd.out, STDOUT_FILENO);
+            close(fd.out);
+        }
+
+        if(fd.err != STDERR_FILENO) {
+            dup2(fd.err, STDERR_FILENO);
+            close(fd.err);
+        }
+
         execvp(args[0], args);
         perror("execvp");
         exit(EXIT_FAILURE);
+    }
+}
+
+static void lsh_close(int const fd) {
+    if(fd != STDIN_FILENO && fd != STDOUT_FILENO && fd != STDERR_FILENO) {
+        close(fd);
+    }
+}
+
+void lsh_start_job(Shell* const shell, Job* const job, bool const foreground) {
+    if(foreground) {
+        current_job = job;
+    }
+
+    int fd_pipe[2];
+    Descriptors fd = {
+        .in = STDIN_FILENO,
+        .out = STDOUT_FILENO,
+        .err = STDERR_FILENO,
+    };
+    for(Process* process = job->first_process; process != NULL;
+        process = process->next) {
+        // Set up pipe.
+        if(process->next) {
+            if(pipe(fd_pipe) < 0) {
+                perror("lsh_start_job: pipe failed");
+                exit(EXIT_FAILURE);
+            }
+            fd.out = fd_pipe[1];
+        }
+
+        // Redirects take priority over pipes, therefore we overwrite.
+        if(process->fd.in != STDIN_FILENO) {
+            // Close previous pipe.
+            lsh_close(fd.in);
+            fd.in = process->fd.in;
+        }
+
+        if(process->fd.out != STDOUT_FILENO) {
+            fd.out = process->fd.out;
+        }
+
+        if(process->fd.err != STDERR_FILENO) {
+            fd.err = process->fd.err;
+        }
+
+        Builtin_Fn const* const builtin = lsh_find_builtin(process->args[0]);
+        if(builtin != NULL) {
+            // TODO: Ignore status.
+            builtin->fn(shell, process->args, fd);
+            process->status = PROCESS_COMPLETED;
+        } else {
+            pid_t const pid = lsh_run_process(shell, process->args, job->pgid,
+                                              fd, foreground);
+            process->pid = pid;
+            if(job->pgid == 0) {
+                job->pgid = pid;
+            }
+        }
+
+        lsh_close(fd.in);
+        lsh_close(fd_pipe[1]);
+        fd.in = fd_pipe[0];
+        fd.out = STDOUT_FILENO;
+        fd.err = STDERR_FILENO;
+    }
+
+    if(job->pgid == 0) {
+        // Job consisted only of builtin commands, which execute immediately,
+        // therefore the job is complete and there is nothing else to be done.
+        return;
+    }
+
+    if(foreground) {
+        lsh_set_job_in_foreground(shell, job, false);
+    } else {
+        lsh_set_job_in_background(shell, job, false);
     }
 }
 
@@ -279,40 +408,6 @@ static void lsh_wait_for(Job* const job) {
         if(lsh_is_job_completed(job) || lsh_is_job_stopped(job)) {
             break;
         }
-    }
-}
-
-void lsh_start_job(Shell* const shell, Job* const job, bool const foreground) {
-    if(foreground) {
-        current_job = job;
-    }
-
-    for(Process* process = job->first_process; process != NULL;
-        process = process->next) {
-        Builtin_Fn const* const builtin = lsh_find_builtin(process->args[0]);
-        if(builtin != NULL) {
-            // TODO: Ignore status.
-            builtin->fn(shell, process->args);
-            process->status = PROCESS_COMPLETED;
-        } else {
-            pid_t const pid = lsh_run_process(process->args, job->pgid);
-            process->pid = pid;
-            if(job->pgid == 0) {
-                job->pgid = pid;
-            }
-        }
-    }
-
-    if(job->pgid == 0) {
-        // Job consisted only of builtin commands, which execute immediately,
-        // therefore the job is complete and there is nothing else to be done.
-        return;
-    }
-
-    if(foreground) {
-        lsh_set_job_in_foreground(shell, job, false);
-    } else {
-        lsh_set_job_in_background(shell, job, false);
     }
 }
 

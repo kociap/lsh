@@ -2,9 +2,12 @@
 #include <parser.h>
 #include <shell.h>
 
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static Process* lsh_create_process_from_command(Command command) {
     Process* process = NULL;
@@ -25,6 +28,27 @@ static Process* lsh_create_process_from_command(Command command) {
 
         current_process->args = current->values;
         current->values = NULL;
+
+        if(current->redirect_in != NULL) {
+            current_process->fd.in =
+                open(current->redirect_in, O_RDONLY | O_CREAT);
+        } else {
+            current_process->fd.in = STDIN_FILENO;
+        }
+
+        if(current->redirect_out != NULL) {
+            current_process->fd.out =
+                open(current->redirect_out, O_WRONLY | O_CREAT);
+        } else {
+            current_process->fd.out = STDOUT_FILENO;
+        }
+
+        if(current->redirect_err != NULL) {
+            current_process->fd.err =
+                open(current->redirect_err, O_WRONLY | O_CREAT);
+        } else {
+            current_process->fd.err = STDERR_FILENO;
+        }
     }
     return process;
 }
@@ -57,13 +81,16 @@ int main(void) {
             exit(EXIT_SUCCESS);
         }
 
+        lsh_update_job_statuses();
+        lsh_cleanup_jobs();
+
         if(getline_result == 0) {
             continue;
         }
 
         Parse_Result parse_result = lsh_parse(line);
         if(parse_result.kind == PARSE_ERROR) {
-            fprintf(stderr, "%s", parse_result.error);
+            fprintf(stderr, "lsh: %s\n", parse_result.error);
             free(parse_result.error);
             free(line);
             continue;
