@@ -174,21 +174,21 @@ static void lsh_update_process_status(pid_t const pid, int const code) {
     }
 
     switch(code) {
-        case CLD_EXITED:
-            process->status = PROCESS_COMPLETED;
-            break;
-        case CLD_KILLED:
-        case CLD_DUMPED:
-            process->status = PROCESS_TERMINATED;
-            break;
-        case CLD_STOPPED:
-            process->status = PROCESS_STOPPED;
-            break;
-        case CLD_CONTINUED:
-            process->status = PROCESS_RUNNING;
-            break;
-        default:
-            break;
+    case CLD_EXITED:
+        process->status = PROCESS_COMPLETED;
+        break;
+    case CLD_KILLED:
+    case CLD_DUMPED:
+        process->status = PROCESS_TERMINATED;
+        break;
+    case CLD_STOPPED:
+        process->status = PROCESS_STOPPED;
+        break;
+    case CLD_CONTINUED:
+        process->status = PROCESS_RUNNING;
+        break;
+    default:
+        break;
     }
 }
 

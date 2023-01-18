@@ -71,6 +71,9 @@ int main(void) {
     Shell shell = lsh_shell_initialise();
     lsh_jobs_initialise();
     while(true) {
+        lsh_update_job_statuses();
+        lsh_cleanup_jobs();
+
         char* const cwd = lsh_get_cwd();
         print_header(cwd);
         free(cwd);
@@ -80,9 +83,6 @@ int main(void) {
         if(getline_result == -1) {
             exit(EXIT_SUCCESS);
         }
-
-        lsh_update_job_statuses();
-        lsh_cleanup_jobs();
 
         if(getline_result == 0) {
             continue;
